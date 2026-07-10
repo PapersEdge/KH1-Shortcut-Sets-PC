@@ -9,10 +9,10 @@ LUAGUI_DESC = "Left and Right DPad switch between 3 pages of Shortcuts"
 -- TopazTK for giving me guidance through the modding process
 -- You: For being yourself <3
 
-debugFlag = false
+debugFlag = true
 
 canExecute = false
-installed = true
+installed = false
 loadComplete = false
 loadFlagLoc = 0
 loadFlag = 0xFF
@@ -35,6 +35,7 @@ DPad_R = 0x20
 inputCooldown = 0
 
 -- Shortcuts
+shortcutPageAddress = 0 -- save the page number so it remembers between sessions
 extraShortcutAddresses = {0, 0, 0, 0, 0, 0, 0, 0, 0} -- stored in the save data in a *hopefully* unused spot
 realShortcutAddresses = {0, 0, 0}
 shortcuts = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF} -- FF = blank slot
@@ -126,6 +127,7 @@ function _OnFrame()
         extraShortcutAddresses[i] = extraShortcutAddresses[1] + (i - 1)
     end
     loadFlagLoc = realShortcutAddresses[1] - 1
+    shortcutPageAddress = extraShortcutAddresses[9] + 1
 
     -- colors for Shortcut HUD are 4 bytes per channel. No one knows why
     local shortcutColorRelativePointer = FetchRelativePointerWithSig(shortcutColorsSignature, 0x25)
@@ -155,27 +157,32 @@ function _OnFrame()
 end
 
 function checkInputGame()
-    if (pressed_L1() == true) then
-        showShortcutPage(currShortcutPageCommand)
+    if (pressed_L1()) then
+        if(isPageEmpty(currShortcutPageCommand)) then
+            currShortcutPageCommand = findNextPage(currShortcutPageCommand, 1)
+            showShortcutPage(currShortcutPageCommand)       
+            currShortcutPageCustomize = currShortcutPageCommand
+            WriteByte(shortcutPageAddress, currShortcutPageCommand)
+        end
+        if(isPageEmpty(currShortcutPageCommand)) then -- all pages are empty
+            currShortcutPageCommand = 0
+            currShortcutPageCustomize = 0
+            WriteByte(shortcutPageAddress, currShortcutPageCommand)
+        end
+
         if (inputCooldown == 0) then -- avoid spamming
             if (pressed_DPad_R()) then
                 inputCooldown = 10
-                currShortcutPageCommand = currShortcutPageCommand + 1
-                if (currShortcutPageCommand > 2) then
-                    currShortcutPageCommand = 0
-                end
+                currShortcutPageCommand = findNextPage(currShortcutPageCommand, 1)
                 showShortcutPage(currShortcutPageCommand)
                 currShortcutPageCustomize = currShortcutPageCommand -- reflect change in Customize Menu
-            end
-            
-            if (pressed_DPad_L()) then
+                WriteByte(shortcutPageAddress, currShortcutPageCommand)
+            elseif (pressed_DPad_L()) then
                 inputCooldown = 10
-                currShortcutPageCommand = currShortcutPageCommand - 1
-                if (currShortcutPageCommand < 0) then
-                    currShortcutPageCommand = 2
-                end
+                currShortcutPageCommand = findNextPage(currShortcutPageCommand, -1)
                 showShortcutPage(currShortcutPageCommand)
                 currShortcutPageCustomize = currShortcutPageCommand
+                WriteByte(shortcutPageAddress, currShortcutPageCommand)
             end
         end
     end
@@ -187,8 +194,8 @@ function checkInputMenu()
         wasEditing = true
         prevMenu = currMenu
     elseif(prevMenu ~= currMenu and currMenu == isOnCustomizeSora) then
-        if (wasEditing == true) then
-            readShortcutPage()
+        if (wasEditing) then
+            readShortcutPage(currShortcutPageCustomize)
             saveShortcuts()
             wasEditing = false
         end
@@ -197,7 +204,7 @@ function checkInputMenu()
 
     if(currMenu == isOnCustomizeSora) then
         if (inputCooldown == 0) then
-            if (pressed_DPad_L() == true) then
+            if (pressed_DPad_L()) then
                 currShortcutPageCustomize = currShortcutPageCustomize - 1
                 if (currShortcutPageCustomize < 0) then
                     currShortcutPageCustomize = 2
@@ -205,7 +212,8 @@ function checkInputMenu()
                 showShortcutPage(currShortcutPageCustomize)              
                 inputCooldown = 10
                 currShortcutPageCommand = currShortcutPageCustomize
-            elseif (pressed_DPad_R() == true) then
+                WriteByte(shortcutPageAddress, currShortcutPageCustomize)
+            elseif (pressed_DPad_R()) then
                 currShortcutPageCustomize = currShortcutPageCustomize + 1
                 if (currShortcutPageCustomize > 2) then
                     currShortcutPageCustomize = 0
@@ -213,14 +221,42 @@ function checkInputMenu()
                 showShortcutPage(currShortcutPageCustomize)          
                 inputCooldown = 10
                 currShortcutPageCommand = currShortcutPageCustomize
+                WriteByte(shortcutPageAddress, currShortcutPageCustomize)
             end
         end
     end
 end
 
-function readShortcutPage()
-    DebugPrint("Reading Page: " .. currShortcutPageCustomize)
-    local i = currShortcutPageCustomize * 3 + 1
+function findNextPage(page, inc)
+    page = incPage(page, inc)
+    local attempts = 0
+    while (isPageEmpty(page) and attempts < 2) do
+        page = incPage(page, inc)
+        attempts = attempts + 1
+    end
+    return page
+end
+
+function incPage(page, inc)
+    page = page + inc
+    if (page > 2) then
+        page = 0
+    elseif (page < 0) then
+        page = 2
+    end
+    return page
+end
+
+function isPageEmpty(page)
+    local i = page * 3 + 1
+    return (shortcuts[i] == 0xFF and 
+        shortcuts[i + 1] == 0xFF and
+        shortcuts[i + 2] == 0xFF)
+end
+
+function readShortcutPage(page)
+    DebugPrint("Reading Page: " .. page)
+    local i = page * 3 + 1
     shortcuts[i] = ReadByte(realShortcutAddresses[1])
     shortcuts[i+1] = ReadByte(realShortcutAddresses[2])
     shortcuts[i+2] = ReadByte(realShortcutAddresses[3])
@@ -261,30 +297,15 @@ function loadShortcuts()
     for i=1, #shortcuts do
         shortcuts[i] = ReadByte(extraShortcutAddresses[i])
     end
+    currShortcutPageCustomize = ReadByte(shortcutPageAddress)
+    if(currShortcutPageCustomize > 2) then
+        currShortcutPageCustomize = 0
+    elseif(currShortcutPageCustomize < 0) then
+        currShortcutPageCustomize = 2
+    end  
+    currShortcutPageCommand = currShortcutPageCustomize
+
     return true
-
-    -- file = io.open("shortcuts.txt","r")
-    -- if(file == nil) then
-    --     return false
-    -- end
-
-    -- i = 1
-    -- for line in file:lines() do
-    --     if(i == 1) then
-    --         customizeSigStart = tonumber(line, 16)
-    --     elseif (i == 2) then
-    --         inputSigStart = tonumber(line, 16)
-    --     elseif (i == 3) then
-    --         shortcutSigStart = tonumber(line, 16)
-    --     elseif (i == 4) then
-    --         shortcutColorsSigStart = tonumber(line, 16)
-    --     else
-    --         ConsolePrint("Slot ".. i-4 .. ": " .. numToMagic(tonumber(line)))
-    --         shortcuts[i-4] = line        
-    --     end
-    --     i = i + 1
-    -- end
-    -- file:close()
 end
 
 function initializeNewSaveData()
@@ -296,6 +317,7 @@ function initializeNewSaveData()
             WriteByte(extraShortcutAddresses[i], 0xFF) -- Add empty slots
         end
     end
+    WriteByte(shortcutPageAddress, 0x00) -- probably uneccessary, but just in case
 end
 
 -- RRRRGGGGBBBB
@@ -424,7 +446,7 @@ function FindSignature(sigName, startOffset, endOffset, pattern, mask)
             end
         end
 
-        if (found == true) then
+        if (found) then
             DebugPrint(string.format("Found "..sigName.." at %X", offset))
             return offset        
         end
@@ -445,7 +467,7 @@ function BytesFromEscapedPattern(pattern)
 end
 
 function DebugPrint(message)
-    if(debugFlag == true) then
+    if(debugFlag) then
         ConsolePrint(message)
     end
 end
